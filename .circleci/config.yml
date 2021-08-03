@@ -1,0 +1,173 @@
+aliases:
+  - &install_yarn_version
+    name: Install specific Yarn version
+    command: |
+      curl -o- -L https://yarnpkg.com/install.sh | bash -s -- --version 1.16.0
+      echo 'export PATH="$HOME/.yarn/bin:$HOME/.config/yarn/global/node_modules/.bin:$PATH"' >> $BASH_ENV
+
+  - &restore_yarn_cache
+    name: Restore Yarn cache
+    keys:
+      - yarn-{{ .Branch }}-packages-{{ checksum "yarn.lock" }}
+
+  - &save_yarn_cache
+    name: Save Yarn cache
+    key: yarn-{{ .Branch }}-packages-{{ checksum "yarn.lock" }}
+    paths:
+      - ~/.cache/yarn
+
+  - &run_yarn_install
+    name: Install dependencies
+    command: yarn install
+
+defaults: &defaults
+  working_directory: ~/react-instantsearch
+  docker:
+    - image: circleci/node:12.14.1@sha256:bc28f8653824cc4e28902e73d140011c94dfeda8b1f83393d049daa468f51693
+
+version: 2
+jobs:
+  test_build:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: *install_yarn_version
+      - restore_cache: *restore_yarn_cache
+      - run: *run_yarn_install
+      - save_cache: *save_yarn_cache
+      - run:
+          name: Build & Test packages size
+          command: yarn test:build
+
+  test_unit:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: *install_yarn_version
+      - restore_cache: *restore_yarn_cache
+      - run: *run_yarn_install
+      - save_cache: *save_yarn_cache
+      - run:
+          name: Lint & Code styles
+          command: yarn lint
+      - run:
+          name: Type checking
+          command: yarn type-check
+      - run:
+          name: Unit Tests
+          command: yarn test --maxWorkers=4
+
+  test_unit_algoliasearch_v3:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: *install_yarn_version
+      - restore_cache: *restore_yarn_cache
+      - run: *run_yarn_install
+      - save_cache: *save_yarn_cache
+      - run:
+          name: Install algoliasearch v3
+          command: |
+            rm -rf examples
+            yarn remove -W @algolia/client-search
+            yarn add -W @types/algoliasearch@3.34.8 algoliasearch@3.35.1
+      - run:
+          name: Type checking
+          command: yarn type-check
+      - run:
+          name: Unit Tests
+          command: yarn test --maxWorkers=4
+
+  test_integration:
+    <<: *defaults
+    docker:
+      - image: circleci/node:12.14.1-browsers@sha256:e50f174a64b0cc2622bd9c3202ef2e1c3495ff281ed653da344350745ac606a2
+    steps:
+      - checkout
+      - run: *install_yarn_version
+      - restore_cache: *restore_yarn_cache
+      - run: *run_yarn_install
+      - save_cache: *save_yarn_cache
+      - run:
+          name: Integration Tests
+          command: yarn test:integration
+
+  test_e2e:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: *install_yarn_version
+      - restore_cache: *restore_yarn_cache
+      - run: *run_yarn_install
+      - save_cache: *save_yarn_cache
+      - run:
+          name: End-2-End tests
+          command: |
+            yarn run website:build
+            yarn run test:e2e:saucelabs
+
+  test_examples:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: *install_yarn_version
+      - restore_cache: *restore_yarn_cache
+      - run: *run_yarn_install
+      - save_cache: *save_yarn_cache
+      - run:
+          name: Build & Test examples
+          command: yarn test:examples
+
+  release_if_needed:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: *install_yarn_version
+      - restore_cache: *restore_yarn_cache
+      - run: *run_yarn_install
+      - save_cache: *save_yarn_cache
+      - run:
+          name: Trigger a release if the latest commit is a release commit
+          command: yarn shipjs trigger
+
+  prepare_release:
+    <<: *defaults
+    steps:
+      - checkout
+      - run: *install_yarn_version
+      - restore_cache: *restore_yarn_cache
+      - run: *run_yarn_install
+      - save_cache: *save_yarn_cache
+      - run:
+          name: Prepare a pull request for next release
+          command: |
+            git config --global user.email "instantsearch-bot@algolia.com"
+            git config --global user.name "InstantSearch"
+            yarn run release --yes --no-browse
+
+workflows:
+  version: 2
+  ci:
+    jobs:
+      - test_build
+      - test_unit
+      - test_unit_algoliasearch_v3
+      - test_integration
+      - test_e2e
+      - test_examples
+      - release_if_needed:
+          filters:
+            branches:
+              only:
+                - master
+                - next
+  scheduled_release:
+    triggers:
+      - schedule:
+          cron: '0 9 * * 2'
+          filters:
+            branches:
+              only:
+                - master
+    jobs:
+      - prepare_release
